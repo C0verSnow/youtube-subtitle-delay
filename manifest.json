@@ -1,6 +1,6 @@
 {
   "name": "YouTube Subtitle Delay",
-  "version": "1.7",
+  "version": "1.8.0",
   "description": "Mini tool to delay the YouTube subtitles",
   "permissions": [
     "storage"
@@ -29,9 +29,7 @@
         "https://www.youtube.com/*"
       ],
       "js": [
-        "shared/constant.js",
-        "shared/utils.js",
-        "content/index.js"
+        "youtube-subtitle-delay.user.js"
       ],
       "css": [
         "shared/styles.css"
