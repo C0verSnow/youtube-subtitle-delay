@@ -10,14 +10,41 @@
 <div id="ytp-caption-window-container" style="width: 600px"></div>
 <script>
   const testOptions = {delay: 0, elementSelector: "#ytp-caption-window-container"}
+  const userscript = new URLSearchParams(location.search).get("runtime") === "userscript"
   const pageErrors = []
   window.addEventListener("error", event => pageErrors.push(event.message))
 
-  // Only extension messaging is substituted; rendering, DOM observers and timers are real.
-  window.chrome = {
+  // Only host APIs are substituted; rendering, DOM observers and timers are real.
+  const menus = new Map()
+  const alerts = []
+  let promptAnswer = null
+  let valueListener
+  let writes = 0
+  const storageKey = "subtitle-delay-test-options"
+  if (userscript) {
+    localStorage.removeItem(storageKey)
+    window.GM_getValue = (key, fallback) => JSON.parse(localStorage.getItem(storageKey)) ?? fallback
+    window.GM_setValue = (key, value) => {
+      localStorage.setItem(storageKey, JSON.stringify(value))
+      writes++
+    }
+    window.GM_addValueChangeListener = (key, listener) => { valueListener = listener }
+    window.GM_registerMenuCommand = (name, callback) => menus.set(name, callback)
+    window.GM_addStyle = css => {
+      const style = document.head.appendChild(document.createElement("style"))
+      style.textContent = css
+      return style
+    }
+    window.prompt = () => promptAnswer
+    window.alert = message => alerts.push(message)
+    window.updateTestOptions = data => valueListener("options", null, data.options, true)
+  } else window.chrome = {
     runtime: {
-      onMessage: {addListener() {}},
-      sendMessage(message, callback) { callback({options: testOptions}) }
+      onMessage: {addListener(listener) { window.updateTestOptions = listener }},
+      sendMessage(message, callback) {
+        if (message.action === "INIT") callback({options: testOptions})
+        else { Object.assign(testOptions, message.options); callback(message.options) }
+      }
     }
   }
 
@@ -41,9 +68,16 @@
     captionWindow(["one", "two", "three", "four", "five", "six"])
   )
 </script>
-<script src="../shared/constant.js"></script>
-<script src="../shared/utils.js"></script>
-<script src="../content/index.js"></script>
+<script>
+  if (userscript) {
+    // ScriptCat can inject after DOMContentLoaded; the standalone file must initialize then too.
+    window.addEventListener("load", () => {
+      const script = document.createElement("script")
+      script.src = "../youtube-subtitle-delay.user.js"
+      document.head.appendChild(script)
+    }, {once: true})
+  } else document.write('<script src="../youtube-subtitle-delay.user.js"><\/script>')
+</script>
 <script>
   (async () => {
     const results = document.getElementById("results")
@@ -94,17 +128,110 @@
       check(labels().join() === "b,c,d", "Retained lines can span two windows")
 
       testOptions.delay = 0.15
+      updateTestOptions({action: "OPTIONS_UPDATE", options: testOptions})
       source.replaceChildren(captionWindow(["later1", "later2", "later3", "later4"]))
       await wait(30)
       check(labels().join() === "b,c,d", "New captions wait for the configured delay")
       await wait(180)
       check(labels().join() === "later2,later3,later4", "Delayed captions also keep the latest three lines")
       testOptions.delay = 0
+      updateTestOptions({action: "OPTIONS_UPDATE", options: testOptions})
 
       await replace([])
       check(delayed().children.length === 0, "Clearing subtitles clears the delayed display")
       await replace([captionWindow(["back"])])
       check(labels().join() === "back", "Subtitles resume after an empty display")
+
+      if (userscript) {
+        const stored = () => JSON.parse(localStorage.getItem(storageKey))
+        const edit = (label, answer) => {
+          promptAnswer = answer
+          const command = [...menus].find(([name]) => name.includes(label))[1]
+          command()
+        }
+        const keyup = (key, target = document.body, extra = {}) =>
+          target.dispatchEvent(new KeyboardEvent("keyup", {key, bubbles: true, composed: true, ...extra}))
+        check(menus.size === 3, "Standalone userscript registers delay and two shortcut menus without Chrome APIs")
+        check(getComputedStyle(document.getElementById("dyst-toast")).position === "absolute",
+          "Userscript supplies its own toast styles inside the video")
+        edit("Set delay", "0.4")
+        check(stored().delay === 0.4, "Menu saves delay to GM storage")
+        source.replaceChildren(captionWindow(["menu delay"]))
+        await wait(40)
+        check(labels().join() === "back", "Menu delay takes effect on the current page")
+        await wait(420)
+        check(labels().join() === "menu delay", "Captions appear after the menu-configured delay")
+        const beforeInvalid = writes
+        for (const answer of [null, "", "abc", "-1", "6", "Infinity"]) edit("Set delay", answer)
+        check(writes === beforeInvalid && alerts.length === 5, "Cancel and invalid delays leave saved settings unchanged")
+        edit("Decrease shortcut", "Q")
+        edit("Increase shortcut", "E")
+        check(stored().decDelayKey === "q" && stored().incDelayKey === "e", "Both shortcut menus save lowercase characters")
+        const beforeKeyInvalid = writes
+        edit("Increase shortcut", "q")
+        edit("Increase shortcut", "two")
+        check(writes === beforeKeyInvalid, "Duplicate and multi-character shortcuts are rejected")
+        keyup("e")
+        check(stored().delay === 0.6, "Custom increase shortcut adds 0.2 seconds")
+        keyup("Q")
+        check(stored().delay === 0.4, "Custom decrease shortcut accepts uppercase and subtracts 0.2 seconds")
+        const beforeTyping = writes
+        for (const tag of ["input", "textarea", "select", "div"]) {
+          const field = document.body.appendChild(document.createElement(tag))
+          if (tag === "div") {
+            field.contentEditable = "true"
+            keyup("e", field.appendChild(document.createElement("span")))
+          } else keyup("e", field)
+          field.remove()
+        }
+        keyup("e", document.body, {ctrlKey: true})
+        keyup("e", document.body, {altKey: true})
+        keyup("e", document.body, {metaKey: true})
+        check(writes === beforeTyping, "Typing and modified shortcuts do not change delay")
+        edit("Set delay", "5")
+        keyup("e")
+        check(stored().delay === 5, "Shortcut cannot raise delay above five seconds")
+        edit("Set delay", "0")
+        keyup("q")
+        check(stored().delay === 0, "Shortcut cannot lower delay below zero")
+
+        edit("Set delay", "0.3")
+        source.replaceChildren(captionWindow(["stale delayed text"]))
+        await wait(20)
+        edit("Set delay", "0")
+        source.replaceChildren(captionWindow(["current zero delay"]))
+        await wait(350)
+        check(labels().join() === "current zero delay", "Changing delay cancels old snapshots so they cannot overwrite new captions")
+
+        valueListener("options", null, {...stored(), delay: 1}, true)
+        keyup("e")
+        check(stored().delay === 1.2, "GM settings changes from another tab update this tab")
+        edit("Set delay", "0")
+        const originalUrl = location.href
+        history.pushState({}, "", `${location.pathname}?runtime=userscript&video=next`)
+        source.replaceChildren(captionWindow(["next video"]))
+        await wait(2200)
+        check(document.querySelectorAll(".delayed").length === 1 && labels().join() === "next video",
+          "YouTube-style navigation reconnects once and displays the new video's captions")
+        source.replaceChildren(captionWindow(["still observing"]))
+        await wait(30)
+        check(labels().join() === "still observing", "Subtitle observer remains active after navigation")
+        history.replaceState({}, "", originalUrl)
+
+        const frame = document.body.appendChild(document.createElement("iframe"))
+        frame.srcdoc = `<!doctype html><script>
+          window.GM_getValue = parent.GM_getValue;
+          window.GM_setValue = parent.GM_setValue;
+          window.GM_addValueChangeListener = () => {};
+          window.GM_registerMenuCommand = () => {};
+          window.GM_addStyle = () => {};
+          <\/script><script src="${new URL("../youtube-subtitle-delay.user.js", location.href)}"><\/script>`
+        await new Promise(resolve => frame.addEventListener("load", resolve, {once: true}))
+        frame.contentDocument.body.dispatchEvent(new frame.contentWindow.KeyboardEvent("keyup", {key: "e", bubbles: true}))
+        check(stored().delay === 0.2 && stored().incDelayKey === "e", "A fresh script instance reads saved delay and shortcuts")
+        frame.remove()
+        localStorage.removeItem(storageKey)
+      }
       check(pageErrors.length === 0, `No browser errors: ${pageErrors.join("; ")}`)
       results.textContent = `PASS: ${passed.length} checks\n` + passed.join("\n")
       results.dataset.status = "passed"
