@@ -11,11 +11,8 @@ let subtitleElm = null;
 let delayedSubtitleElm = null;
 let toastVisibilityInterval = null;
 
-const orgElmObserver = new MutationObserver((mutationsList) => {
-  for (const mutation of mutationsList) {
-    // get the width of the first element of subtitleElm
-    updateDelayedSubtitle(subtitleElm.innerHTML, subtitleElm.getAttribute("style"))
-  }
+const orgElmObserver = new MutationObserver(() => {
+  updateDelayedSubtitle(subtitleElm.innerHTML, subtitleElm.getAttribute("style"))
 })
 
 function init() {
@@ -46,7 +43,8 @@ function startObservation() {
       delayedSubtitleElm.id = delayedSubtitleElm.id + "-delayed"
       delayedSubtitleElm.classList.add("delayed")
       subtitleElm.parentNode.insertBefore(delayedSubtitleElm, subtitleElm)
-      orgElmObserver.observe(subtitleElm, {attributes: true, childList: true, subtree: true});
+      renderDelayedSubtitle(subtitleElm.innerHTML, subtitleElm.getAttribute("style"))
+      orgElmObserver.observe(subtitleElm, {attributes: true, childList: true, characterData: true, subtree: true});
 
       // add style to hide original styles
       let style = document.createElement("style")
@@ -73,12 +71,31 @@ function updateDelayedSubtitle(nextContent, nextStyles) {
   let delay = (+options.delay * 1000) || 0
 
   setTimeout(() => {
-    delayedSubtitleElm.innerHTML = nextContent.replaceAll("translateY", "translateYFake");
-    delayedSubtitleElm.setAttribute("style", nextStyles)
-    delayedSubtitleElm.firstChild.id = ""
-
-    delayedSubtitleElm.firstChild.style.width = `calc(${subtitleElm.clientWidth}px - ${delayedSubtitleElm.firstChild.style.left} + 50px)`;
+    renderDelayedSubtitle(nextContent, nextStyles)
   }, delay);
+}
+
+function renderDelayedSubtitle(nextContent, nextStyles) {
+  delayedSubtitleElm.innerHTML = nextContent.replaceAll("translateY", "translateYFake");
+  delayedSubtitleElm.setAttribute("style", nextStyles)
+
+  const lines = [...delayedSubtitleElm.querySelectorAll(".caption-visual-line")]
+  lines.slice(0, -3).forEach(line => line.remove())
+
+  delayedSubtitleElm.querySelectorAll(".caption-window").forEach(captionWindow => {
+    if (!captionWindow.querySelector(".caption-visual-line")) {
+      captionWindow.remove()
+      return
+    }
+    // YouTube's copied height still includes the lines removed above.
+    captionWindow.style.height = "auto"
+  })
+
+  const firstCaptionWindow = delayedSubtitleElm.firstElementChild
+  if (!firstCaptionWindow) return
+
+  firstCaptionWindow.id = ""
+  firstCaptionWindow.style.width = `calc(${subtitleElm.clientWidth}px - ${firstCaptionWindow.style.left} + 50px)`;
 }
 
 function handleMessages(data) {
