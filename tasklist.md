@@ -1,7 +1,7 @@
 # 本文档为4象限的任务清单，全文书写大白话
 
 ## 想做：
-- [1794478498] 完成 issue #1：字幕最多显示最新的三行，更新说明，提交 PR 等待用户 review，并按 issue 要求关闭 issue。
+- [1794533504] 本次 issue 的代码、文档和 PR 已完成，没有新增计划。
 
 ## 做完：
 - [1794533421] 首次显示和每次延迟更新都只保留最后三行；删掉空字幕窗口并重算高度，保留字幕格式，支持文字直接更新与清空后恢复。
@@ -9,11 +9,15 @@
 - [1794533421] JavaScript 语法检查和 git diff --check 通过；未执行本地构建或编译。
 - [1794533421] GitHub 检索与比较结果已写到 docs/subtitle-line-limit.md：借鉴 EasySubs 限制当前字幕行的思路，没有复制第三方代码，也没有增加依赖。
 - [1794478498] 已同步 GitHub 仓库，读完 issue 和补充说明，并创建 feature/latest-three-subtitle-lines 分支。
-
-## 没做：
-- [1794478498] 按用户约定不做本地构建、编译，也不运行会触发编译的测试。
-
-## 在做：
 - [1794533421] 完成最后的差异检查，准备提交 feature 分支和 PR，等待用户 review。
 - [1794478498] 查看字幕收集与显示逻辑，确认三行限制应该放在哪里，并检查现有验证流程。
 - [1794478644] 确认旧字幕被整段复制的问题；GitHub 检索到 EasySubs（MIT，304 stars，2026-10-13 有提交）和 ImprovedTube（4680 stars，2026-11-10 有提交），正在比较字幕实现；仓库没有现成测试或远端 CI。
+- [1794533504] 已推送 feature/latest-three-subtitle-lines，创建 PR #2：https://github.com/C0verSnow/youtube-subtitle-delay/pull/2 。PR 可以合并，当前未合并，留给用户 review。
+- [1794533504] 按 issue 原文要求关闭 issue #1：https://github.com/C0verSnow/youtube-subtitle-delay/issues/1 。
+
+## 没做：
+- [1794478498] 按用户约定不做本地构建、编译，也不运行会触发编译的测试。
+- [1794533504] 没有在真实 YouTube 页面验收全屏和用户字体设置；README 已写出验收步骤。仓库没有现成远端 CI。
+
+## 在做：
+- [1794533504] PR #2 等待用户 review。
