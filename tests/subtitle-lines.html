@@ -1,0 +1,116 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Subtitle line regression tests</title>
+<style>
+  .caption-visual-line { display: block; }
+  .caption-window { font: 20px/24px sans-serif; }
+</style>
+<h1>Subtitle line regression tests</h1>
+<pre id="results">Running...</pre>
+<div id="ytp-caption-window-container" style="width: 600px"></div>
+<script>
+  const testOptions = {delay: 0, elementSelector: "#ytp-caption-window-container"}
+  const pageErrors = []
+  window.addEventListener("error", event => pageErrors.push(event.message))
+
+  // Only extension messaging is substituted; rendering, DOM observers and timers are real.
+  window.chrome = {
+    runtime: {
+      onMessage: {addListener() {}},
+      sendMessage(message, callback) { callback({options: testOptions}) }
+    }
+  }
+
+  function captionWindow(labels) {
+    const windowElm = document.createElement("div")
+    windowElm.className = "caption-window"
+    windowElm.style.cssText = "height: 240px; left: 0px"
+    const text = windowElm.appendChild(document.createElement("span"))
+    text.className = "captions-text"
+    labels.forEach(label => {
+      const line = text.appendChild(document.createElement("span"))
+      line.className = "caption-visual-line"
+      const segment = line.appendChild(document.createElement("b"))
+      segment.className = "ytp-caption-segment"
+      segment.textContent = label
+    })
+    return windowElm
+  }
+
+  document.getElementById("ytp-caption-window-container").appendChild(
+    captionWindow(["one", "two", "three", "four", "five", "six"])
+  )
+</script>
+<script src="../shared/constant.js"></script>
+<script src="../shared/utils.js"></script>
+<script src="../content/index.js"></script>
+<script>
+  (async () => {
+    const results = document.getElementById("results")
+    const source = document.getElementById("ytp-caption-window-container")
+    const passed = []
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+    const delayed = () => document.getElementById("ytp-caption-window-container-delayed")
+    const labels = () => [...delayed().querySelectorAll(".caption-visual-line")].map(line => line.textContent)
+    function check(condition, message) {
+      if (!condition) throw new Error(message)
+      passed.push(message)
+    }
+    async function replace(windows) {
+      source.replaceChildren(...windows)
+      await wait(30)
+    }
+
+    try {
+      for (let attempt = 0; attempt < 150 && !delayed(); attempt++) await wait(20)
+      check(!!delayed(), "The real content script initializes")
+      check(labels().join() === "four,five,six", "Initial display keeps the latest three lines")
+      check(source.querySelectorAll(".caption-visual-line").length === 6, "Original captions are untouched")
+      check(delayed().querySelector(".caption-window").getBoundingClientRect().height === 72,
+        "The window shrinks to three lines instead of keeping the copied height")
+      check(delayed().querySelectorAll("b.ytp-caption-segment").length === 3, "Subtitle formatting is preserved")
+
+      for (const expected of [["one"], ["one", "two"], ["one", "two", "three"]]) {
+        await replace([captionWindow(expected)])
+        check(labels().join() === expected.join(), `${expected.length} lines stay unchanged`)
+      }
+
+      await replace([captionWindow(["old", "one", "two", "three"])])
+      check(labels().join() === "one,two,three", "The fourth line removes the oldest line")
+      const longCaption = captionWindow(Array.from({length: 150}, (_, i) => String(i + 1)))
+      await replace([longCaption])
+      check(labels().join() === "148,149,150", "Long automatic captions keep only the newest three lines")
+
+      const latestSegment = longCaption.querySelector(".caption-visual-line:last-child b")
+      latestSegment.firstChild.data = "updated"
+      await wait(30)
+      check(labels().join() === "148,149,updated", "Text-node updates refresh the latest line")
+
+      await replace([captionWindow(["old window"]), captionWindow(["a", "b", "c", "d"])])
+      check(labels().join() === "b,c,d", "Three-line limit applies across caption windows")
+      check(delayed().querySelectorAll(".caption-window").length === 1, "Empty old caption windows are removed")
+
+      await replace([captionWindow(["a", "b"]), captionWindow(["c", "d"])])
+      check(labels().join() === "b,c,d", "Retained lines can span two windows")
+
+      testOptions.delay = 0.15
+      source.replaceChildren(captionWindow(["later1", "later2", "later3", "later4"]))
+      await wait(30)
+      check(labels().join() === "b,c,d", "New captions wait for the configured delay")
+      await wait(180)
+      check(labels().join() === "later2,later3,later4", "Delayed captions also keep the latest three lines")
+      testOptions.delay = 0
+
+      await replace([])
+      check(delayed().children.length === 0, "Clearing subtitles clears the delayed display")
+      await replace([captionWindow(["back"])])
+      check(labels().join() === "back", "Subtitles resume after an empty display")
+      check(pageErrors.length === 0, `No browser errors: ${pageErrors.join("; ")}`)
+      results.textContent = `PASS: ${passed.length} checks\n` + passed.join("\n")
+      results.dataset.status = "passed"
+    } catch (error) {
+      results.textContent = `FAIL after ${passed.length} checks: ${error.message}\n` + passed.join("\n")
+      results.dataset.status = "failed"
+    }
+  })()
+</script>
