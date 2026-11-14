@@ -1,0 +1,53 @@
+name: Subtitle tests
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Check syntax and site support
+        run: |
+          node --check youtube-subtitle-delay.user.js
+          node --check background.js
+          node tests/site-matches.cjs
+      - name: Install browser runner
+        run: |
+          npm install --global agent-browser@0.42.0
+          agent-browser install --with-deps
+      - name: Run desktop and mobile caption regressions
+        shell: bash
+        run: |
+          python3 -m http.server 8000 --bind 127.0.0.1 > /tmp/subtitle-http.log 2>&1 &
+          SERVER_PID=$!
+          BROWSER_SESSION="$(agent-browser session id --scope worktree --prefix subtitle-tests)"
+          trap 'agent-browser --session "$BROWSER_SESSION" close || true; kill "$SERVER_PID"' EXIT
+          for device in desktop mobile; do
+            for runtime in extension userscript; do
+              echo "Testing $runtime on $device"
+              agent-browser --session "$BROWSER_SESSION" open about:blank
+              if [ "$device" = mobile ]; then
+                agent-browser --session "$BROWSER_SESSION" set device "iPhone 14"
+              else
+                agent-browser --session "$BROWSER_SESSION" set viewport 1280 800
+              fi
+              agent-browser --session "$BROWSER_SESSION" open "http://127.0.0.1:8000/tests/subtitle-lines.html?runtime=$runtime"
+              agent-browser --session "$BROWSER_SESSION" snapshot
+              agent-browser --session "$BROWSER_SESSION" wait --fn '!!document.querySelector("#results[data-status]")'
+              agent-browser --session "$BROWSER_SESSION" get text '#results'
+              STATUS="$(agent-browser --session "$BROWSER_SESSION" get attr '#results' data-status)"
+              test "$STATUS" = passed
+              agent-browser --session "$BROWSER_SESSION" close
+            done
+          done
