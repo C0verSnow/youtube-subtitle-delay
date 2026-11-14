@@ -1,5 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Subtitle line regression tests</title>
 <style>
   .caption-visual-line { display: block; }
@@ -7,7 +8,7 @@
 </style>
 <h1>Subtitle line regression tests</h1>
 <pre id="results">Running...</pre>
-<div id="ytp-caption-window-container" style="width: 600px"></div>
+<div id="ytp-caption-window-container" style="width: min(600px, 100%)"></div>
 <script>
   const testOptions = {delay: 0, elementSelector: "#ytp-caption-window-container"}
   const userscript = new URLSearchParams(location.search).get("runtime") === "userscript"

@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         YouTube Subtitle Delay
 // @namespace    https://github.com/C0verSnow/youtube-subtitle-delay
-// @version      1.8.0
+// @version      1.8.1
 // @description  Delay YouTube captions and keep the latest three lines.
 // @match        https://youtube.com/*
 // @match        https://www.youtube.com/*
+// @match        https://m.youtube.com/*
 // @noframes
 // @run-at       document-end
 // @inject-into  content

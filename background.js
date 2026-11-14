@@ -58,7 +58,7 @@ function handleTabUpdate(tabId, {status}) {
 function updateExtStatusInTab(tabId, url) {
   if (!tabId) return;
 
-  const youtubeRegEx = /https:\/\/(www.)?youtube\.com.*/gm
+  const youtubeRegEx = /^https:\/\/(www\.|m\.)?youtube\.com\//
   const isAllowed = !!url && youtubeRegEx.test(url)
 
   let iconPath = {
