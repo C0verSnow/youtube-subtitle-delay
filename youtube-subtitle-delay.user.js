@@ -1,14 +1,14 @@
+
 // ==UserScript==
-// @name         YouTube Subtitle Delay
+// @name         YouTube Subtitle Delay - Firefox & Chrome Fixed
 // @namespace    https://github.com/C0verSnow/youtube-subtitle-delay
-// @version      1.8.1
-// @description  Delay YouTube captions and keep the latest three lines.
+// @version      1.9.3
+// @description  YouTube subtitle delay with Firefox Trusted Types CSP fix.
 // @match        https://youtube.com/*
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
 // @noframes
-// @run-at       document-end
-// @inject-into  content
+// @run-at       document-idle
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
@@ -17,264 +17,702 @@
 // ==/UserScript==
 
 (function () {
-'use strict';
+  'use strict';
 
-const defaultOptions = {
-  delay: 0,
-  elementSelector: "#ytp-caption-window-container",
-  decDelayKey: "a",
-  incDelayKey: "d"
-}
-const platform = createPlatform()
+  const DEFAULTS = {
+    delay: 0,
+    elementSelector: '#ytp-caption-window-container',
+    decDelayKey: 'a',
+    incDelayKey: 'd'
+  };
 
-let options = null;
-let subtitleElm = null;
-let delayedSubtitleElm = null;
-let toastVisibilityInterval = null;
-let checkElementInterval = null;
-let subtitleStyle = null;
-const pendingSubtitles = new Set();
+  const PREFIX = '[YT Subtitle Delay]';
 
-const orgElmObserver = new MutationObserver(() => {
-  updateDelayedSubtitle(subtitleElm.innerHTML, subtitleElm.getAttribute("style"))
-})
+  let options = { ...DEFAULTS };
+  let original = null;
+  let clone = null;
+  let captionObserver = null;
+  let scanTimer = null;
+  let toastTimer = null;
+  let toast = null;
+  let hideStyle = null;
+  let lastUrl = location.href;
+  let generation = 0;
+  let lastSignature = null;
+  let pending = new Set();
+  let connected = false;
+  let lastError = '';
 
-function init() {
-  platform.loadOptions(savedOptions => {
-    options = normalizeOptions(savedOptions)
-    platform.onOptionsChanged(savedOptions => applyOptions(normalizeOptions(savedOptions)))
-    document.addEventListener("keyup", handleKeyup)
-    let lastUrl = location.href
-    new MutationObserver(() => {
-      if (location.href !== lastUrl) {
-        lastUrl = location.href
-        startObservation()
-      }
-    }).observe(document, {childList: true, subtree: true})
-    startObservation();
-  })
-}
-
-function startObservation() {
-  orgElmObserver.disconnect()
-  clearInterval(checkElementInterval)
-  pendingSubtitles.forEach(clearTimeout)
-  pendingSubtitles.clear()
-  subtitleStyle?.remove()
-  if (delayedSubtitleElm) {
-    delayedSubtitleElm.remove()
-    delayedSubtitleElm = null
+  function log(...args) {
+    console.log(PREFIX, ...args);
   }
 
-  let checkCount = 0
-  showToast("Looking for the subtitle mechanism...", 0)
+  function reportError(error) {
+    const message = String(error?.message || error);
+    console.error(PREFIX, error);
 
-  // find original subtitle element on the document
-  // and clone it within its parent
-  // and start observe
-  checkElementInterval = setInterval(() => {
-    checkCount++;
-    subtitleElm = document.querySelector(options.elementSelector)
-    if (subtitleElm && !delayedSubtitleElm) {
-      delayedSubtitleElm = subtitleElm.cloneNode(true)
-      delayedSubtitleElm.id = delayedSubtitleElm.id + "-delayed"
-      delayedSubtitleElm.classList.add("delayed")
-      subtitleElm.parentNode.insertBefore(delayedSubtitleElm, subtitleElm)
-      renderDelayedSubtitle(subtitleElm.innerHTML, subtitleElm.getAttribute("style"))
-      orgElmObserver.observe(subtitleElm, {attributes: true, childList: true, characterData: true, subtree: true});
-
-      // add style to hide original styles
-      subtitleStyle = document.createElement("style")
-      subtitleStyle.textContent = `body ${options.elementSelector}:not(.delayed) *{display:none!important;text-shadow:none!important;color:transparent!important}`
-      document.head.appendChild(subtitleStyle)
-
-      clearInterval(checkElementInterval)
-      if (!!+options.delay) {
-        showToast(`Subtitle delay set as ${options.delay} sec !`)
-      } else {
-        showToast("Delay functionality added :)")
-      }
+    if (message !== lastError) {
+      lastError = message;
+      showToast('Subtitle error: ' + message, 5000);
     }
+  }
 
-    // in the case of not finding the subtitle element
-    if (checkCount > 5 && !delayedSubtitleElm) {
-      clearInterval(checkElementInterval)
-      showToast("Could not find the subtitle mechanism, maybe it's not available for this content!", 5000)
+  function safe(fn) {
+    try {
+      return fn();
+    } catch (error) {
+      reportError(error);
+      return null;
     }
-  }, 2000)
-}
-
-function updateDelayedSubtitle(nextContent, nextStyles) {
-  let delay = (+options.delay * 1000) || 0
-
-  const timer = setTimeout(() => {
-    pendingSubtitles.delete(timer)
-    renderDelayedSubtitle(nextContent, nextStyles)
-  }, delay);
-  pendingSubtitles.add(timer)
-}
-
-function renderDelayedSubtitle(nextContent, nextStyles) {
-  delayedSubtitleElm.innerHTML = nextContent.replaceAll("translateY", "translateYFake");
-  delayedSubtitleElm.setAttribute("style", nextStyles)
-
-  const lines = [...delayedSubtitleElm.querySelectorAll(".caption-visual-line")]
-  lines.slice(0, -3).forEach(line => line.remove())
-
-  delayedSubtitleElm.querySelectorAll(".caption-window").forEach(captionWindow => {
-    if (!captionWindow.querySelector(".caption-visual-line")) {
-      captionWindow.remove()
-      return
-    }
-    // YouTube's copied height still includes the lines removed above.
-    captionWindow.style.height = "auto"
-  })
-
-  const firstCaptionWindow = delayedSubtitleElm.firstElementChild
-  if (!firstCaptionWindow) return
-
-  firstCaptionWindow.id = ""
-  firstCaptionWindow.style.width = `calc(${subtitleElm.clientWidth}px - ${firstCaptionWindow.style.left} + 50px)`;
-}
-
-function applyOptions(savedOptions) {
-  options = savedOptions
-  pendingSubtitles.forEach(clearTimeout)
-  pendingSubtitles.clear()
-  if (delayedSubtitleElm) {
-    updateDelayedSubtitle(subtitleElm.innerHTML, subtitleElm.getAttribute("style"))
-  }
-  showToast(options.delay ? `Subtitle delay set as ${options.delay} sec !` : "No subtitle delay!")
-}
-
-function handleKeyup(e) {
-  const target = e.composedPath()[0];
-  if (target.closest?.("input, textarea, select, [contenteditable]:not([contenteditable='false'])") ||
-      e.ctrlKey || e.altKey || e.metaKey) {
-    return;
   }
 
-  let updatedDelay = null
-  if (e.key.toLowerCase() === options.decDelayKey) {
-    updatedDelay = +options.delay - 0.2
-  } else if (e.key.toLowerCase() === options.incDelayKey) {
-    updatedDelay = +options.delay + 0.2
-  }
+  function normalize(value) {
+    const data =
+      value && typeof value === 'object' ? value : {};
 
-  if (updatedDelay !== null) {
-    platform.saveOptions({
-      ...options,
-      delay: Math.min(5, Math.max(0, +updatedDelay.toFixed(1)))
-    }, applyOptions)
-  }
-}
+    const delay = Number(data.delay ?? 0);
 
-function showToast(msg, hideDelay = 3000) {
-  if (!msg) return
-
-  let msgElm = document.getElementById("dyst-toast")
-  if (!msgElm) {
-    msgElm = document.createElement("div")
-    msgElm.setAttribute("id", "dyst-toast")
-    msgElm.classList.add("dyst-toast")
-  }
-  msgElm.innerText = msg;
-
-  // append as a sibling of delayed element or as an element of body
-  (delayedSubtitleElm?.parentNode || document.body).appendChild(msgElm)
-  if (delayedSubtitleElm?.parentNode) {
-    msgElm.classList.add("on-video")
-  }
-
-  if (!hideDelay) {
-    return msgElm
-  }
-
-  if (toastVisibilityInterval) {
-    clearTimeout(toastVisibilityInterval)
-  }
-
-  toastVisibilityInterval = setTimeout(() => {
-    msgElm.remove()
-    msgElm = null
-  }, hideDelay)
-}
-
-function createPlatform() {
-  if (typeof GM_getValue === "function") {
-    GM_addStyle(`
-      .dyst-toast {position:fixed;left:1rem;bottom:1.5rem;font:1.5rem sans-serif;
-        padding:.5rem 1rem;max-width:calc(100% - 2rem);background:#000;color:#fff;z-index:999;}
-      .dyst-toast.on-video {position:absolute;bottom:1rem;font-size:1.25rem;}
-    `)
-    GM_registerMenuCommand("设置字幕延迟 / Set delay (0–5s)", () => editOption("delay"))
-    GM_registerMenuCommand("设置减少延迟快捷键 / Decrease shortcut", () => editOption("decDelayKey"))
-    GM_registerMenuCommand("设置增加延迟快捷键 / Increase shortcut", () => editOption("incDelayKey"))
     return {
-      loadOptions(callback) { callback(GM_getValue("options", defaultOptions)) },
-      saveOptions(nextOptions, callback) {
-        GM_setValue("options", nextOptions)
-        callback(nextOptions)
-      },
-      onOptionsChanged(callback) {
-        GM_addValueChangeListener("options", (name, oldValue, newValue, remote) => {
-          if (remote) callback(newValue)
-        })
+      delay: Number.isFinite(delay)
+        ? Math.max(0, Math.min(5, delay))
+        : 0,
+
+      elementSelector:
+        typeof data.elementSelector === 'string' &&
+        data.elementSelector.trim()
+          ? data.elementSelector
+          : DEFAULTS.elementSelector,
+
+      decDelayKey:
+        typeof data.decDelayKey === 'string' &&
+        data.decDelayKey.length === 1
+          ? data.decDelayKey.toLowerCase()
+          : 'a',
+
+      incDelayKey:
+        typeof data.incDelayKey === 'string' &&
+        data.incDelayKey.length === 1
+          ? data.incDelayKey.toLowerCase()
+          : 'd'
+    };
+  }
+
+  function loadOptions() {
+    if (typeof GM_getValue === 'function') {
+      return normalize(
+        GM_getValue('options', DEFAULTS)
+      );
+    }
+
+    return { ...DEFAULTS };
+  }
+
+  function addStyle(css) {
+    if (typeof GM_addStyle === 'function') {
+      return GM_addStyle(css);
+    }
+
+    const style = document.createElement('style');
+    style.textContent = css;
+
+    (document.head || document.documentElement)
+      .appendChild(style);
+
+    return style;
+  }
+
+  function showToast(message, duration = 3000) {
+    clearTimeout(toastTimer);
+
+    if (!toast || !toast.isConnected) {
+      toast = document.createElement('div');
+      toast.id = 'dyst-toast';
+
+      (document.body || document.documentElement)
+        .appendChild(toast);
+    }
+
+    toast.textContent = message;
+
+    if (duration > 0) {
+      toastTimer = setTimeout(clearToast, duration);
+    }
+  }
+
+  function clearToast() {
+    clearTimeout(toastTimer);
+
+    if (toast) {
+      toast.remove();
+      toast = null;
+    }
+  }
+
+  function cancelPending() {
+    generation++;
+
+    for (const timer of pending) {
+      clearTimeout(timer);
+    }
+
+    pending.clear();
+  }
+
+  function cleanup() {
+    captionObserver?.disconnect();
+    captionObserver = null;
+
+    cancelPending();
+
+    hideStyle?.remove();
+    hideStyle = null;
+
+    clone?.remove();
+    clone = null;
+
+    original = null;
+    connected = false;
+    lastSignature = null;
+  }
+
+  function getCaptionElement() {
+    const selectors = [
+      options.elementSelector,
+      '#ytp-caption-window-container',
+      '.ytp-caption-window-container'
+    ];
+
+    for (const selector of new Set(selectors)) {
+      try {
+        const elements =
+          document.querySelectorAll(selector);
+
+        for (const element of elements) {
+          if (
+            !element.classList.contains('dyst-delayed') &&
+            !element.closest('.dyst-delayed')
+          ) {
+            return element;
+          }
+        }
+      } catch (error) {
+        console.warn(PREFIX, 'Invalid selector:', selector);
       }
     }
+
+    return null;
   }
-  return {
-    loadOptions(callback) {
-      chrome.runtime.sendMessage({action: "INIT"}, response => callback(response.options))
-    },
-    saveOptions(nextOptions, callback) {
-      chrome.runtime.sendMessage({action: "SET_OPTIONS", options: nextOptions}, callback)
-    },
-    onOptionsChanged(callback) {
-      chrome.runtime.onMessage.addListener(data => {
-        if (data.action === "OPTIONS_UPDATE") callback(data.options)
-      })
+
+  function hasRealCaptions(element) {
+    if (!element) return false;
+
+    return Boolean(
+      element.querySelector('.caption-visual-line') ||
+      element.querySelector('.ytp-caption-segment')
+    );
+  }
+
+  function makeHideStyle() {
+    hideStyle = document.createElement('style');
+
+    hideStyle.textContent = `
+      #ytp-caption-window-container:not(.dyst-delayed)
+      .caption-window {
+        visibility: hidden !important;
+      }
+
+      .dyst-delayed {
+        pointer-events: none !important;
+      }
+
+      .dyst-delayed .caption-window {
+        visibility: visible !important;
+      }
+    `;
+
+    (document.head || document.documentElement)
+      .appendChild(hideStyle);
+  }
+
+  // Firefox CSP fix:
+  // Never write HTML strings using innerHTML.
+  // Copy existing DOM nodes instead.
+  function renderCaption(snapshot, style) {
+    if (!clone || !original || !snapshot) return;
+
+    const nodes = Array.from(
+      snapshot.childNodes,
+      node => node.cloneNode(true)
+    );
+
+    clone.replaceChildren(...nodes);
+
+    if (style === null) {
+      clone.removeAttribute('style');
+    } else {
+      clone.setAttribute('style', style);
+    }
+
+    clone.style.pointerEvents = 'none';
+
+    // Avoid duplicate IDs in the document.
+    clone.querySelectorAll('[id]').forEach(el => {
+      el.removeAttribute('id');
+    });
+
+    // Prevent the copied transform from moving
+    // delayed subtitles out of position.
+    clone.querySelectorAll('[style]').forEach(el => {
+      const transform = el.style.transform;
+
+      if (transform && transform.includes('translateY')) {
+        el.style.transform = transform.replace(
+          /translateY\([^)]*\)/g,
+          'none'
+        );
+      }
+    });
+
+    const lines = [
+      ...clone.querySelectorAll('.caption-visual-line')
+    ];
+
+    // Keep only the latest three caption lines.
+    lines.slice(0, -3).forEach(line => line.remove());
+
+    clone.querySelectorAll('.caption-window')
+      .forEach(windowElement => {
+        const hasLine = windowElement.querySelector(
+          '.caption-visual-line, .ytp-caption-segment'
+        );
+
+        if (!hasLine) {
+          windowElement.remove();
+        } else {
+          windowElement.style.height = 'auto';
+        }
+      });
+
+    const first = clone.firstElementChild;
+
+    if (first) {
+      first.removeAttribute('id');
+
+      const left = first.style.left || '0px';
+
+      first.style.width =
+        `calc(${original.clientWidth}px - ${left} + 50px)`;
     }
   }
-}
 
-function normalizeOptions(savedOptions) {
-  const data = savedOptions && typeof savedOptions === "object" ? savedOptions : {}
-  const delay = Number(data.delay ?? defaultOptions.delay)
-  return {
-    delay: Number.isFinite(delay) ? Math.min(5, Math.max(0, delay)) : defaultOptions.delay,
-    elementSelector: data.elementSelector || defaultOptions.elementSelector,
-    decDelayKey: typeof data.decDelayKey === "string" && data.decDelayKey.length === 1
-      ? data.decDelayKey.toLowerCase() : defaultOptions.decDelayKey,
-    incDelayKey: typeof data.incDelayKey === "string" && data.incDelayKey.length === 1
-      ? data.incDelayKey.toLowerCase() : defaultOptions.incDelayKey
+  function prepareClone(element) {
+    if (!element || !element.parentNode) return false;
+
+    cleanup();
+
+    try {
+      original = element;
+      clone = element.cloneNode(true);
+
+      clone.id =
+        (original.id || 'ytp-caption-window-container') +
+        '-delayed';
+
+      clone.classList.add('dyst-delayed');
+      clone.style.pointerEvents = 'none';
+
+      original.parentNode.insertBefore(clone, original);
+
+      // Render initial captions without innerHTML writes.
+      renderCaption(
+        original.cloneNode(true),
+        original.getAttribute('style')
+      );
+
+      makeHideStyle();
+
+      captionObserver = new MutationObserver(() => {
+        safe(() => scheduleRender());
+      });
+
+      captionObserver.observe(original, {
+        attributes: true,
+        attributeFilter: ['style', 'class'],
+        childList: true,
+        characterData: true,
+        subtree: true
+      });
+
+      connected = true;
+      lastError = '';
+
+      clearToast();
+
+      showToast(
+        options.delay > 0
+          ? `Subtitle delay ready: ${options.delay.toFixed(1)}s`
+          : 'Subtitle delay ready',
+        2500
+      );
+
+      log('Connected to YouTube captions');
+      return true;
+
+    } catch (error) {
+      cleanup();
+      reportError(error);
+      return false;
+    }
   }
-}
 
-function editOption(key) {
-  const nextValue = readOption(key)
-  if (nextValue === null) return
-  platform.saveOptions({...options, [key]: nextValue}, applyOptions)
-}
+  function scheduleRender(force = false) {
+    if (!original || !clone) return;
 
-function readOption(key) {
-  const isDelay = key === "delay"
-  const value = prompt(isDelay ? "字幕延迟（0–5 秒） / Delay in seconds (0–5)" :
-    "输入一个快捷键字符 / Enter one shortcut character", String(options[key]))
-  if (value === null) return null
-  const nextValue = isDelay ? Number(value) : value.trim().toLowerCase()
-  if (isDelay ? !value.trim() || !Number.isFinite(nextValue) || nextValue < 0 || nextValue > 5 :
-      nextValue.length !== 1 || nextValue === options[key === "decDelayKey" ? "incDelayKey" : "decDelayKey"]) {
-    alert(isDelay ? "请输入 0–5 之间的数字 / Enter a number from 0 to 5" :
-      "请输入一个不同的快捷键字符 / Enter one distinct shortcut character")
-    return null
+    const style = original.getAttribute('style');
+
+    // Reading innerHTML is allowed. The CSP error
+    // occurs when assigning a string to innerHTML.
+    const signature =
+      original.innerHTML + '\u0000' + style;
+
+    if (!force && signature === lastSignature) {
+      return;
+    }
+
+    lastSignature = signature;
+
+    // Capture DOM at the moment the subtitle changes.
+    // Do not read the live DOM after the delay.
+    const snapshot = original.cloneNode(true);
+
+    const currentGeneration = generation;
+    const delay = Math.max(
+      0,
+      Number(options.delay) * 1000
+    );
+
+    const timer = setTimeout(() => {
+      pending.delete(timer);
+
+      if (currentGeneration !== generation) return;
+
+      if (
+        !original?.isConnected ||
+        !clone?.isConnected
+      ) {
+        return;
+      }
+
+      safe(() => renderCaption(snapshot, style));
+    }, delay);
+
+    pending.add(timer);
   }
-  return nextValue
-}
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", init, {once: true})
-} else {
-  init()
-}
+  function scan() {
+    safe(() => {
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+
+        cleanup();
+        clearToast();
+
+        log('YouTube navigation detected');
+      }
+
+      if (
+        connected &&
+        (
+          !original?.isConnected ||
+          !clone?.isConnected
+        )
+      ) {
+        cleanup();
+      }
+
+      if (connected) return;
+
+      const element = getCaptionElement();
+
+      if (!element) return;
+
+      // Wait until YouTube creates actual caption text.
+      if (!hasRealCaptions(element)) return;
+
+      prepareClone(element);
+    });
+  }
+
+  function restart() {
+    cleanup();
+    clearToast();
+    scan();
+  }
+
+  function startMonitoring() {
+    clearInterval(scanTimer);
+
+    // Keep searching even if subtitles load late.
+    scanTimer = setInterval(scan, 1000);
+
+    document.addEventListener(
+      'yt-navigate-finish',
+      () => {
+        lastUrl = location.href;
+        restart();
+      }
+    );
+
+    showToast(
+      'Looking for YouTube captions...',
+      3000
+    );
+
+    scan();
+  }
+
+  function applyOptions(nextOptions, persist = true) {
+    const oldSelector = options.elementSelector;
+
+    options = normalize(nextOptions);
+
+    if (
+      persist &&
+      typeof GM_setValue === 'function'
+    ) {
+      GM_setValue('options', options);
+    }
+
+    if (oldSelector !== options.elementSelector) {
+      restart();
+    } else {
+      cancelPending();
+      lastSignature = null;
+
+      if (connected) {
+        scheduleRender(true);
+      }
+    }
+
+    showToast(
+      options.delay
+        ? `Subtitle delay: ${options.delay.toFixed(1)}s`
+        : 'No subtitle delay',
+      2500
+    );
+  }
+
+  function handleKeyup(event) {
+    if (
+      event.ctrlKey ||
+      event.altKey ||
+      event.metaKey
+    ) {
+      return;
+    }
+
+    const target =
+      event.composedPath?.()[0] || event.target;
+
+    if (target?.closest?.(
+      'input, textarea, select, [contenteditable]:not([contenteditable="false"])'
+    )) {
+      return;
+    }
+
+    const key = event.key?.toLowerCase();
+    let next = null;
+
+    if (key === options.decDelayKey) {
+      next = options.delay - 0.2;
+    } else if (key === options.incDelayKey) {
+      next = options.delay + 0.2;
+    }
+
+    if (next === null) return;
+
+    applyOptions({
+      ...options,
+      delay: Math.max(
+        0,
+        Math.min(5, Number(next.toFixed(1)))
+      )
+    });
+  }
+
+  function editOption(key) {
+    const isDelay = key === 'delay';
+
+    const input = prompt(
+      isDelay
+        ? '字幕延迟（0–5 秒） / Delay (0–5 sec)'
+        : '输入一个快捷键字符 / Enter shortcut key',
+      String(options[key])
+    );
+
+    if (input === null) return;
+
+    const value = isDelay
+      ? Number(input)
+      : input.trim().toLowerCase();
+
+    if (isDelay) {
+      if (
+        !input.trim() ||
+        !Number.isFinite(value) ||
+        value < 0 ||
+        value > 5
+      ) {
+        alert('请输入 0–5 之间的数字');
+        return;
+      }
+    } else {
+      const otherKey =
+        key === 'decDelayKey'
+          ? 'incDelayKey'
+          : 'decDelayKey';
+
+      if (
+        value.length !== 1 ||
+        value === options[otherKey]
+      ) {
+        alert('请输入一个不同的单字符快捷键');
+        return;
+      }
+    }
+
+    applyOptions({
+      ...options,
+      [key]: value
+    });
+  }
+
+  function registerMenus() {
+    if (
+      typeof GM_registerMenuCommand !== 'function'
+    ) {
+      return;
+    }
+
+    GM_registerMenuCommand(
+      '设置字幕延迟 / Set delay (0–5s)',
+      () => editOption('delay')
+    );
+
+    GM_registerMenuCommand(
+      '减少延迟快捷键 / Decrease shortcut',
+      () => editOption('decDelayKey')
+    );
+
+    GM_registerMenuCommand(
+      '增加延迟快捷键 / Increase shortcut',
+      () => editOption('incDelayKey')
+    );
+
+    GM_registerMenuCommand(
+      '重新连接字幕 / Reconnect captions',
+      () => {
+        restart();
+
+        if (!connected) {
+          showToast('Waiting for captions...', 3000);
+        }
+      }
+    );
+
+    GM_registerMenuCommand(
+      '查看字幕状态 / Caption status',
+      () => {
+        const element = getCaptionElement();
+
+        const status = {
+          browser: navigator.userAgent,
+          found: Boolean(element),
+          hasText: hasRealCaptions(element),
+          connected,
+          delay: options.delay,
+          originalConnected:
+            Boolean(original?.isConnected),
+          cloneConnected:
+            Boolean(clone?.isConnected),
+          pendingTimers: pending.size,
+          lastError
+        };
+
+        console.table(status);
+
+        alert(
+          '字幕容器：' +
+          (status.found ? '已找到' : '未找到') +
+          '\n字幕内容：' +
+          (status.hasText ? '已找到' : '未找到') +
+          '\n延迟功能：' +
+          (status.connected ? '已连接' : '未连接') +
+          '\n延迟秒数：' +
+          status.delay +
+          '\n最近错误：' +
+          (status.lastError || '无') +
+          '\n\n详细信息见 F12 控制台'
+        );
+      }
+    );
+  }
+
+  function init() {
+    options = loadOptions();
+
+    addStyle(`
+      #dyst-toast {
+        position: fixed;
+        left: 1rem;
+        bottom: 1.5rem;
+        z-index: 2147483647;
+        max-width: calc(100% - 2rem);
+        padding: .5rem 1rem;
+        border-radius: 5px;
+        background: #000;
+        color: #fff;
+        font: 16px sans-serif;
+        pointer-events: none;
+      }
+
+      .dyst-delayed {
+        pointer-events: none !important;
+      }
+    `);
+
+    registerMenus();
+
+    if (
+      typeof GM_addValueChangeListener === 'function'
+    ) {
+      GM_addValueChangeListener(
+        'options',
+        (name, oldValue, newValue, remote) => {
+          if (remote) {
+            applyOptions(newValue, false);
+          }
+        }
+      );
+    }
+
+    document.addEventListener(
+      'keyup',
+      handleKeyup
+    );
+
+    startMonitoring();
+
+    log('Initialized successfully');
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      () => safe(init),
+      { once: true }
+    );
+  } else {
+    safe(init);
+  }
 })();
